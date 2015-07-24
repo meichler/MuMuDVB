@@ -100,7 +100,8 @@ int
 unicast_send_cam_action (int Socket, char *Key, void *cam_p);
 int
 unicast_send_EIT (eit_packet_t *eit_packets, int Socket);
-
+int
+unicast_send_didl_multicast (int number_of_channels, mumudvb_channel_t *channels, char* host, int Socket);
 
 int unicast_handle_message(unicast_parameters_t* unicast_vars,
 		unicast_client_t* client,
@@ -810,6 +811,21 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 				unicast_send_index_page(client->Socket);
 				return -2; //We close the connection afterwards
 			}
+			//didl
+			else if(strstr(client->buffer +pos ,"/didl.xml ")==(client->buffer +pos))
+			{
+				log_message( log_module, MSG_DETAIL,"didl list\n");
+				char *hoststr;
+				hoststr=strstr(client->buffer ,"Host: ");
+				if(hoststr)
+				{
+					substring = strtok (hoststr+6, "\r");
+				}
+				else
+					substring=NULL;
+				unicast_send_didl_multicast (number_of_channels, channels, substring, client->Socket);
+				return -2; //We close the connection afterwards
+			}
 			//Not implemented path --> 404
 			else
 				err404=1;
@@ -1252,6 +1268,61 @@ unicast_send_play_list_multicast (int number_of_channels, mumudvb_channel_t *cha
 
 
 
+/** @brief Send a basic text file containig the didl
+ *
+ * @param number_of_channels the number of channels
+ * @param channels the channels array
+ * @param Socket the socket on wich the information have to be sent
+ */
+int
+unicast_send_didl_multicast (int number_of_channels, mumudvb_channel_t *channels, char* host, int Socket)
+{
+	int curr_channel;
+	char urlheader[4];
+
+
+	struct unicast_reply* reply = unicast_reply_init();
+	if (NULL == reply) {
+		log_message( log_module, MSG_INFO,"Error when creating the HTTP reply\n");
+		return -1;
+	}
+
+	unicast_reply_write(reply, "<DIDL-Lite>\r\n");
+	unicast_reply_write(reply, "<container id=\"_0\" parentID=\"_\" restricted=\"1\" searchable=\"1\" childCount=\"33\">\r\n<dc:title>Root</dc:title>\r\n<upnp:class>object.container.playlistContainer</upnp:class>\r\n</container>\r\n");
+	unicast_reply_write(reply, "<container id=\"_3\" parentID=\"_0\" restricted=\"1\" searchable=\"1\" childCount=\"33\">\r\n<dc:title>TV</dc:title>\r\n<upnp:class>object.container.playlistContainer</upnp:class>\r\n</container>\r\n");
+	unicast_reply_write(reply, "<container id=\"_300\" parentID=\"_3\" restricted=\"1\" searchable=\"1\" childCount=\"25\">\r\n<dc:title>TNT</dc:title>\r\n<upnp:class>object.container.playlistContainer</upnp:class>\r\n<upnp:albumArtURI></upnp:albumArtURI></container>\r\n");
+
+
+	
+	for (curr_channel = 0; curr_channel < number_of_channels; curr_channel++)
+		if (channels[curr_channel].channel_ready>=READY)
+		{
+			if(channels[curr_channel].rtp)
+				strcpy(urlheader,"rtp");
+			else
+				strcpy(urlheader,"udp");
+			
+			unicast_reply_write(reply, "<item id=\"_%d\" parentID=\"_300\" restricted=\"1\">\r\n<dc:title>%s</dc:title>\r\n<upnp:channelName>%s</upnp:channelName>\r\n<upnp:channelNr>%d</upnp:channelNr>\r\n<upnp:channelGroupName/>\r\n<upnp:price>0</upnp:price>\r\n<upnp:class>object.item.videoItem.videoBroadcast</upnp:class>\r\n<upnp:albumArtURI></upnp:albumArtURI>\r\n<dc:description/>\r\n<res protocolInfo=\"rtp:*:video/mp4:*\" size=\"\" bitrate=\"0\" bitsPerSample=\"0\" resolution=\"\">%s://%s:%d</res>\r\n</item>\r\n",
+					curr_channel,
+					channels[curr_channel].name,
+					channels[curr_channel].name,
+					curr_channel,
+					urlheader,
+					channels[curr_channel].ip4Out,
+					channels[curr_channel].portOut);
+		}
+
+	unicast_reply_write(reply, "</DIDL-Lite>\r\n");
+
+	unicast_reply_send(reply, Socket, 200, "text/xml");
+
+	if (0 != unicast_reply_free(reply)) {
+		log_message( log_module, MSG_INFO,"Error when releasing the HTTP reply after sendinf it\n");
+		return -1;
+	}
+
+	return 0;
+}
 
 
 
