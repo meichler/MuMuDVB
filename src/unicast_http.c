@@ -47,6 +47,7 @@
 #include <stdarg.h>
 #include <time.h>
 #include <stdlib.h>
+#include <ctype.h>
 
 #include "unicast_http.h"
 #include "unicast_queue.h"
@@ -100,8 +101,14 @@ int
 unicast_send_cam_action (int Socket, char *Key, void *cam_p);
 int
 unicast_send_EIT (eit_packet_t *eit_packets, int Socket);
+char*
+get_logo_name (const char* channel_name, char* logo_name);
 int
 unicast_send_didl_multicast (int number_of_channels, mumudvb_channel_t *channels, char* host, int Socket);
+char* 
+unicast_clean_pictureName( char* s );
+int
+unicast_send_picture (unicast_parameters_t *unicast_vars, int Socket, char *picture);
 
 int unicast_handle_message(unicast_parameters_t* unicast_vars,
 		unicast_client_t* client,
@@ -133,6 +140,7 @@ void init_unicast_v(unicast_parameters_t *unicast_vars)
 				.socket_sendbuf_size=0,
 				.flush_on_eagain=0,
 				.pfdsnum=0,
+				.logoPath_str=NULL,
 	 };
 	 unicast_vars->pfds=NULL;
 	 //+1 for closing the pfd list, see man poll
@@ -237,6 +245,12 @@ int read_unicast_configuration(unicast_parameters_t *unicast_vars, mumudvb_chann
 		unicast_vars->flush_on_eagain = atoi (substring);
 		if(unicast_vars->flush_on_eagain)
 			log_message( log_module,  MSG_INFO, "The unicast data WILL be dropped on eagain errors\n");
+	}
+	else if (!strcmp (substring, "logo_path"))
+	{
+		substring = strtok (NULL, "");
+		unicast_vars->logoPath_str=malloc(sizeof(char)*(strlen(substring)+1));
+		strcpy(unicast_vars->logoPath_str,substring);
 	}
 	else
 		return 0; //Nothing concerning tuning, we return 0 to explore the other possibilities
@@ -826,6 +840,14 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 				unicast_send_didl_multicast (number_of_channels, channels, substring, client->Socket);
 				return -2; //We close the connection afterwards
 			}
+			//picture
+			else if(strstr(client->buffer +pos ,"/image/")==(client->buffer +pos))
+			{
+				log_message( log_module, MSG_DETAIL,"picture\n");
+				pos+=strlen("/image/");
+				unicast_send_picture (unicast_vars, client->Socket, client->buffer+pos);
+				return -2; //We close the connection afterwards
+			}
 			//Not implemented path --> 404
 			else
 				err404=1;
@@ -994,6 +1016,60 @@ int unicast_reply_write(struct unicast_reply *reply, const char* msg, ...)
 	}
 	*used += real_len;
 	va_end(args);
+	return 0;
+}
+
+/** @brief Write data in a buffer using the same syntax that printf()
+ *
+ * auto-realloc buffer if needed
+ */
+int unicast_reply_binarywrite(struct unicast_reply *reply, const char* msg, const int size)
+{
+	char **buffer;
+	char *temp_buffer;
+	int *length;
+	int *used;
+	buffer=NULL;
+	if (NULL == msg)
+		return -1;
+	switch(reply->type)
+	{
+	case REPLY_HEADER:
+		buffer=&reply->buffer_header;
+		length=&reply->length_header;
+		used=&reply->used_header;
+		break;
+	case REPLY_BODY:
+		buffer=&reply->buffer_body;
+		length=&reply->length_body;
+		used=&reply->used_body;
+		break;
+	default:
+		log_message( log_module, MSG_WARN,"unicast_reply_write with wrong type, please contact\n");
+		return -1;
+	}
+	
+	int estimated_len = size; /* !! imply gcc -std=c99 */
+	//Since vsnprintf put the mess we reinitiate the args
+
+	// Must add 1 byte more for the terminating zero (not counted)
+	while (*length - *used < estimated_len + 1) {
+		temp_buffer = realloc(*buffer, *length + REPLY_SIZE_STEP);
+		if(temp_buffer == NULL)
+		{
+			log_message( log_module, MSG_ERROR,"Problem with realloc : %s file : %s line %d\n",strerror(errno),__FILE__,__LINE__);
+			
+			return -1;
+		}
+		*buffer=temp_buffer;
+		*length += REPLY_SIZE_STEP;
+	}
+	memcpy((*buffer+*used), msg, size);
+	//if (real_len != estimated_len) {
+	//	log_message( log_module, MSG_WARN,"Error when writing the HTTP reply\n");
+	//}
+	*used += estimated_len;
+	
 	return 0;
 }
 
@@ -1266,12 +1342,39 @@ unicast_send_play_list_multicast (int number_of_channels, mumudvb_channel_t *cha
 	return 0;
 }
 
+/** @brief get logo name (lower case and stop at first space)
+ *
+ * @param channel_name channel name
+ * @param logo_name where to put logo name
+ */
+char* get_logo_name (const char* channel_name, char* logo_name)
+{
+	char* p = logo_name;
+	char* r = channel_name;
+	
+	if (logo_name == NULL)
+	{
+		return NULL;
+	}
+	
+	// end of logo name at first space
+	while ((*r!=' ') && (*r != 0))
+	{
+		*p = tolower( *r );
+		
+		r++;
+		p++;
+	}
+	*p=0;
+	return logo_name;
+}
 
 
 /** @brief Send a basic text file containig the didl
  *
  * @param number_of_channels the number of channels
  * @param channels the channels array
+ * @param host host address
  * @param Socket the socket on wich the information have to be sent
  */
 int
@@ -1279,6 +1382,7 @@ unicast_send_didl_multicast (int number_of_channels, mumudvb_channel_t *channels
 {
 	int curr_channel;
 	char urlheader[4];
+	char logoname[50];
 
 
 	struct unicast_reply* reply = unicast_reply_init();
@@ -1301,12 +1405,16 @@ unicast_send_didl_multicast (int number_of_channels, mumudvb_channel_t *channels
 				strcpy(urlheader,"rtp");
 			else
 				strcpy(urlheader,"udp");
+
+			get_logo_name(channels[curr_channel].name, logoname);
 			
-			unicast_reply_write(reply, "<item id=\"_%d\" parentID=\"_300\" restricted=\"1\">\r\n<dc:title>%s</dc:title>\r\n<upnp:channelName>%s</upnp:channelName>\r\n<upnp:channelNr>%d</upnp:channelNr>\r\n<upnp:channelGroupName/>\r\n<upnp:price>0</upnp:price>\r\n<upnp:class>object.item.videoItem.videoBroadcast</upnp:class>\r\n<upnp:albumArtURI></upnp:albumArtURI>\r\n<dc:description/>\r\n<res protocolInfo=\"rtp:*:video/mp4:*\" size=\"\" bitrate=\"0\" bitsPerSample=\"0\" resolution=\"\">%s://%s:%d</res>\r\n</item>\r\n",
+			unicast_reply_write(reply, "<item id=\"_%d\" parentID=\"_300\" restricted=\"1\">\r\n<dc:title>%s</dc:title>\r\n<upnp:channelName>%s</upnp:channelName>\r\n<upnp:channelNr>%d</upnp:channelNr>\r\n<upnp:channelGroupName/>\r\n<upnp:price>0</upnp:price>\r\n<upnp:class>object.item.videoItem.videoBroadcast</upnp:class>\r\n<upnp:albumArtURI>http://%s/image/%s</upnp:albumArtURI>\r\n<dc:description/>\r\n<res protocolInfo=\"rtp:*:video/mp4:*\" size=\"\" bitrate=\"0\" bitsPerSample=\"0\" resolution=\"\">%s://%s:%d</res>\r\n</item>\r\n",
 					curr_channel,
 					channels[curr_channel].name,
 					channels[curr_channel].name,
 					curr_channel,
+					host,
+					logoname,
 					urlheader,
 					channels[curr_channel].ip4Out,
 					channels[curr_channel].portOut);
@@ -1324,9 +1432,103 @@ unicast_send_didl_multicast (int number_of_channels, mumudvb_channel_t *channels
 	return 0;
 }
 
+/** @brief Clean http picture name
+ *
+ * @param s picture name
+ */
+char* unicast_clean_pictureName( char* s )
+{
+	char* p = s;
+	char* r = s;
+	char hexValue[3];
+	hexValue[2] = 0;
+	
+	// end of logo name at first space
+	while ((*r!=' ') && (*r != 0))
+	{
+		//case http char
+		if (*r == '%')
+		{
+			// get char hex value
+			hexValue[0] = *(r+1);
+			hexValue[1] = *(r+2);
+			*p = (char)strtol(hexValue, NULL,16);
+			// go to next char after hex value
+			r +=2;
+		}
+		else
+		{
+			*p = tolower( *r );
+		}
+		r++;
+		p++;
+	}
+	*p=0;
+	return s;
+}
 
+/** @brief Send a picture
+ *
+ * @param unicast_vars global vars
+ * @param Socket the socket on wich the information have to be sent
+ * @param picture picture name
+ */
+int
+unicast_send_picture (unicast_parameters_t *unicast_vars, int Socket, char *picture)
+{
+	char fname[50];
+	char buffer[100];
+	char path[100];
+	int size;
+	FILE *file;
+	
+	log_message( log_module, MSG_INFO,"request picture brut : %s\n", picture);
+	
+	unicast_clean_pictureName(picture);
+	
+	log_message( log_module, MSG_INFO,"request picture : %s\n", picture);
+	
+	struct unicast_reply* reply = unicast_reply_init();
+	if (NULL == reply) {
+		log_message( log_module, MSG_INFO,"Error when creating the HTTP reply\n");
+		return -1;
+	}
+	
+	//check logo path is configured
+	if ((unicast_vars->logoPath_str == NULL) || (strlen(unicast_vars->logoPath_str) == 0))
+	{
+		log_message( log_module, MSG_INFO,"Error logo path is not set\n");
+		return -1;
+	}
+	
+	//"/home/www/htdocs/IPSODVBGateway/backend/images/tvChannelsLogos/defaults/"
+	sprintf (fname, "%s/%s.png", unicast_vars->logoPath_str, picture);
 
+	//Open picture
+	file = fopen(fname, "r");
+	
+	if (file != NULL)
+	{
+		//Read picture
+		while ((size=fread(buffer, 1, 100,file))>0)
+		{
+			unicast_reply_binarywrite(reply, buffer, size);
+		}
+		fclose(file);
+		
+		
+		unicast_reply_send(reply, Socket, 200, "image/png");
+	}
+	else
+	{
+		unicast_reply_send(reply, Socket, 404, "text/xml");
+	}
 
+	if (0 != unicast_reply_free(reply)) {
+		log_message( log_module, MSG_INFO,"Error when releasing the HTTP reply after sendinf it\n");
+		return -1;
+	}
 
-
+	return 0;
+}
 

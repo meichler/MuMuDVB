@@ -196,6 +196,8 @@ typedef struct unicast_parameters_t{
   /**File descriptors for pooling*/
   struct pollfd *pfds;	//unicast http clients
   int pfdsnum;
+  /** didl logo path **/
+  char *logoPath_str;
 
 }unicast_parameters_t;
 
@@ -212,6 +214,7 @@ struct unicast_reply {
  struct unicast_reply* unicast_reply_init();
  int unicast_reply_free(struct unicast_reply *reply);
  int unicast_reply_write(struct unicast_reply *reply, const char* msg, ...);
+ int unicast_reply_binarywrite(struct unicast_reply *reply, const char* msg, const int size);
  int unicast_reply_send(struct unicast_reply *reply, int socket, int code, const char* content_type);
 
 int unicast_create_listening_socket(int socket_type, int socket_channel, char *ipOut, int port, struct sockaddr_in *sIn, int *socketIn, unicast_parameters_t *unicast_vars);
