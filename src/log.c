@@ -824,6 +824,8 @@ char *pid_type_to_str(int type)
 		return "Teletext";
 	case PID_EXTRA_SUBTITLE:
 		return "Subtitling";
+	case PID_ECM:
+		return "CA information (ECM,EMM)";
 	case PID_UNKNOW:
 	default:
 		return "Unknown";

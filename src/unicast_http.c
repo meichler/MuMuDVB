@@ -39,6 +39,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
+#include <strings.h>
 #include <poll.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -712,10 +713,37 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 					return -2; //to delete the client
 				}
 				pos+=strlen("/byname/");
-				log_message( log_module, MSG_DEBUG,"Channel by number\n");
+                log_message( log_module, MSG_DEBUG,"Channel by name\n");
+
 				substring = strtok (client->buffer+pos, " ");
-				if(substring == NULL)
+                char *end = strstr(substring, " HTTP"); // find end of channel name (this way channel name can contain spaces)
+                
+                if(substring == NULL) {
 					err404=1;
+                }
+                else if(end == NULL) {
+                    err404=1;
+                    log_message( log_module, MSG_DEBUG,"Channel name was not found in the URL `%s`\n", substring);
+                }
+				else
+				{
+                    end[0] = '\0'; // add string terminator to be able to get channel name
+
+                    char requested_channel_name[MAX_NAME_LEN];
+                    char current_channel_name[MAX_NAME_LEN];
+                    strcpy(requested_channel_name, substring);
+                    process_channel_name(requested_channel_name);
+                    
+                    for(int current_channel=0; current_channel<number_of_channels;current_channel++)
+                    {
+                        strcpy(current_channel_name, channels[current_channel].name);
+                        process_channel_name(current_channel_name);
+
+                        if(strcasecmp(current_channel_name, requested_channel_name) == 0)
+                            requested_channel=current_channel+1;
+                    }
+                    if(requested_channel)
+                        log_message( log_module, MSG_DEBUG,"Channel by name, name `%s` number `%d`\n", requested_channel_name, requested_channel);
 				else
 				{
 					log_message( log_module, MSG_DEBUG,"Channel by name, name %s\n",substring);
@@ -1532,3 +1560,28 @@ unicast_send_picture (unicast_parameters_t *unicast_vars, int Socket, char *pict
 	return 0;
 }
 
+/** @brief Trims name of a channel to remove leading and trailing spaces, and replaces all spaces by '-' character.
+ * Note that the string will be modified so do a copy prior to running this function if modifications to the original shall be prevented.
+ *
+ * @param str Channel name to process
+ */
+void process_channel_name(char *str) {
+    int i;
+    int begin = 0;
+    int end = strlen(str) - 1;
+
+    while (isspace(str[begin]))
+        begin++;
+    while ((end >= begin) && isspace(str[end]))
+        end--;
+    
+    // shift all characters back to the start of the string array
+    for (i = begin; i <= end; i++) {
+        if (isspace(str[i]))
+            str[i - begin] = '-'; // replace spaces by '-'
+        else
+            str[i - begin] = str[i];
+    }
+    
+    str[i - begin] = '\0';
+}
